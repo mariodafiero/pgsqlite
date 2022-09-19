@@ -21,7 +21,6 @@ logger = structlog.get_logger(__name__)
 
 class PGSqlite(object):
 
-
     def remap_column_type(self, column_type: str) -> str:
         if "STRING" in column_type:
             return "TEXT"
@@ -239,9 +238,9 @@ class PGSqlite(object):
                         for idx, c in enumerate(table.columns):
                             if c.type in self.transformers:
                                 row[idx] = self.transformers[c.type](row[idx], not c.notnull)
-                        if nullable_column_indexes:
-                            for idx in nullable_column_indexes:
-                                if row[idx] is None:
+                            if not c.notnull:
+                                # for numeric types, we need to be we don't evaluate False on a 0
+                                if row[idx] != 0 and not row[idx]:
                                     row[idx] = None
 
                         await copy.write_row(row)
@@ -250,7 +249,7 @@ class PGSqlite(object):
                             self.summary["tables"]["data"][table.name]["status"] = f"LOADED {rows_copied}"
 
                     self.summary["tables"]["data"][table.name]["status"] = f"LOADED {rows_copied}"
-                logger.info(f"Finished loading data into {table.name}")
+                logger.info(f"Finished loading {rows_copied} rows of data into {table.name}")
 
         sl_conn.close()
 
