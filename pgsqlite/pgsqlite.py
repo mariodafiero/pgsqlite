@@ -219,7 +219,7 @@ class PGSqlite(object):
     async def write_table_data(self, table):
         sl_conn = sqlite3.connect(self.sqlite_filename)
         sl_cur = sl_conn.cursor()
-        logger.debug(f"Loading data into {table.name}", table=table.name)
+        logger.info(f"Loading data into {table.name}", table=table.name)
         # Given the table name came from the SQLITE database, and we're using it
         # to read from the sqlite database, we are okay with the literal substitution here
         sl_cur.execute(f'SELECT * FROM "{table.name}"')
