@@ -11,6 +11,7 @@ import sys
 import logging
 import structlog
 import argparse
+import asyncio
 
 _IGNORE_CHECKS=True
 _IGNORE_TRIGGERS=True
@@ -42,7 +43,7 @@ class PGSqlite(object):
 
 
 
-    def __init__(self, sqlite_filename: str, pg_conninfo: str) -> None:
+    def __init__(self, sqlite_filename: str, pg_conninfo: str, show_sample_data: bool = False) -> None:
         self.sqlite_filename = sqlite_filename
         self.pg_conninfo = pg_conninfo
         self.tables_sql = []
@@ -61,6 +62,7 @@ class PGSqlite(object):
         self.summary["triggers"] = {}
         self.transformers = {}
         self.transformers['BOOLEAN'] = self.boolean_transformer
+        self.show_sample_data = show_sample_data
 
     def get_table_sql(self, table: Table) -> SQL:
         create_sql = SQL("CREATE TABLE {table_name} (").format(table_name=Identifier(table.name))
@@ -213,6 +215,45 @@ class PGSqlite(object):
                 self.summary["triggers"][trigge.name]["status"] = "IGNORED"
 
 
+
+
+    async def write_table_data(self, table):
+        sl_conn = sqlite3.connect(self.sqlite_filename)
+        sl_cur = sl_conn.cursor()
+        logger.debug(f"Loading data into {table.name}", table=table.name)
+        # Given the table name came from the SQLITE database, and we're using it
+        # to read from the sqlite database, we are okay with the literal substitution here
+        sl_cur.execute(f'SELECT * FROM "{table.name}"')
+        nullable_column_indexes = []
+        for idx, c in enumerate(table.columns):
+            if not c.notnull:
+                nullable_column_indexes.append(idx)
+
+        # For any non-null column, allow convert from empty string to None
+        async with await psycopg.AsyncConnection.connect(conninfo=self.pg_conninfo) as conn:
+            async with conn.cursor() as pg_cur:
+                async with pg_cur.copy(f'COPY "{table.name}" FROM STDIN') as copy:
+                    rows_copied = 0
+                    for row in sl_cur:
+                        row = list(row)
+                        for idx, c in enumerate(table.columns):
+                            if c.type in self.transformers:
+                                row[idx] = self.transformers[c.type](row[idx], not c.notnull)
+                        if nullable_column_indexes:
+                            for idx in nullable_column_indexes:
+                                if row[idx] is None:
+                                    row[idx] = None
+
+                        await copy.write_row(row)
+                        rows_copied += 1
+                        if rows_copied % 1000 == 0:
+                            self.summary["tables"]["data"][table.name]["status"] = f"LOADED {rows_copied}"
+
+                    self.summary["tables"]["data"][table.name]["status"] = f"LOADED {rows_copied}"
+                logger.info(f"Finished loading data into {table.name}")
+
+        sl_conn.close()
+
     def load_data_to_postgres(self):
         db = Database(self.sqlite_filename)
         sl_conn = sqlite3.connect(self.sqlite_filename)
@@ -224,43 +265,19 @@ class PGSqlite(object):
             self.summary["tables"]["data"][table.name] = {}
             self.summary["tables"]["data"][table.name]["row_count"] = sl_cur.fetchone()[0]
             self.summary["tables"]["data"][table.name]["status"] = "PREPARED"
-
-        with psycopg.connect(conninfo=self.pg_conninfo) as conn:
-            with conn.cursor() as cur:
-                for table in db.tables:
-                    logger.debug(f"Loading data into {table.name}", table=table.name)
-                    # Given the table name came from the SQLITE database, and we're using it
-                    # to read from the sqlite database, we are okay with the literal substitution here
-                    sl_cur.execute(f'SELECT * FROM "{table.name}"')
-                    nullable_column_indexes = []
-                    for idx, c in enumerate(table.columns):
-                        if not c.notnull:
-                            nullable_column_indexes.append(idx)
-
-                    # For any non-null column, allow convert from empty string to None
-                    with cur.copy(f'COPY "{table.name}" FROM STDIN') as copy:
-                        rows_copied = 0
-                        for row in sl_cur:
-                            row = list(row)
-                            for idx, c in enumerate(table.columns):
-                                if c.type in self.transformers:
-                                    row[idx] = self.transformers[c.type](row[idx], not c.notnull)
-                            if nullable_column_indexes:
-                                for idx in nullable_column_indexes:
-                                    if not row[idx]:
-                                        row[idx] = None
-
-                            copy.write_row(row)
-                            rows_copied += 1
-                            if rows_copied % 1000 == 0:
-                                self.summary["tables"]["data"][table.name]["status"] = f"LOADED {rows_copied}"
-
-                        self.summary["tables"]["data"][table.name]["status"] = f"LOADED {rows_copied}"
-                    cur.execute(f'SELECT * from "{table.name}" LIMIT 10')
-                    logger.debug(cur.fetchall())
-                    logger.info(f"Finished loading data into {table.name}")
-
         sl_conn.close()
+
+        async def load_all_data():
+            await asyncio.gather(*[self.write_table_data(table) for table in db.tables])
+        load_results = asyncio.run(load_all_data())
+
+        if self.show_sample_data:
+            for table in db.tables:
+                with psycopg.connect(conninfo=self.pg_conninfo) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(f'SELECT * from "{table.name}" LIMIT 10')
+                        logger.debug(f"Data in {table.name}")
+                        logger.debug(cur.fetchall())
 
     def get_summary(self) -> Dict[str, Any]:
         return self.summary
@@ -346,6 +363,12 @@ if __name__ == "__main__":
         help="Set log level to DEBUG",
     )
     parser.add_argument(
+        "--show_sample_data",
+        type=bool,
+        default=False,
+        help="After import, show up to 10 rows of the imported data in each table.",
+    )
+    parser.add_argument(
         "--drop_tables",
         type=bool,
         default=False,
@@ -373,7 +396,7 @@ if __name__ == "__main__":
     sqlite_filename = args.sqlite_filename
     pg_conninfo = args.postgres_connect_url
 
-    loader = PGSqlite(sqlite_filename, pg_conninfo)
+    loader = PGSqlite(sqlite_filename, pg_conninfo, show_sample_data=args.show_sample_data)
     loader.load_schema(drop_existing_postgres_tables=args.drop_tables)
     loader.populate_postgres()
     logger.debug(loader.get_summary())
