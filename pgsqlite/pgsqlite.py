@@ -29,6 +29,8 @@ class PGSqlite(object):
             return column_type.replace("NVARCHAR", "VARCHAR")
         elif "DATETIME" in column_type:
             return "TIMESTAMP"
+        elif "BLOB" in column_type:
+            return "BYTEA"
         return column_type
 
     def boolean_transformer(self, val: Any, nullable: bool) -> Union[bool, None]:
@@ -213,8 +215,6 @@ class PGSqlite(object):
                 logger.debug(f"DB trigger: {trigger}", trigger=trigger)
                 self.summary["triggers"][trigger.name] = {}
                 self.summary["triggers"][trigge.name]["status"] = "IGNORED"
-
-
 
 
     async def write_table_data(self, table):
