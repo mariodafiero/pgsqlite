@@ -28,6 +28,8 @@ class PGSqlite(object):
             return column_type.replace("NVARCHAR", "VARCHAR")
         elif "DATETIME" in column_type:
             return "TIMESTAMP"
+        elif "BLOB" in column_type:
+            return "BYTEA"
         return column_type
 
     def boolean_transformer(self, val: Any, nullable: bool) -> Union[bool, None]:
@@ -247,9 +249,8 @@ class PGSqlite(object):
                                     row[idx] = self.transformers[c.type](row[idx], not c.notnull)
                             if nullable_column_indexes:
                                 for idx in nullable_column_indexes:
-                                    if not row[idx]:
+                                    if row[idx] is None:
                                         row[idx] = None
-
                             copy.write_row(row)
                             rows_copied += 1
                             if rows_copied % 1000 == 0:
