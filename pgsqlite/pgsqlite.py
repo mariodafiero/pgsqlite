@@ -2,6 +2,7 @@ from sqlite_utils import Database
 from typing import List, Any, Dict, Union, Optional
 from sqlite_utils.db import Table
 import datetime
+import json
 import sqlite3
 import psycopg
 from psycopg.rows import dict_row
@@ -20,6 +21,14 @@ _IGNORE_VIEWS=True
 logger = structlog.get_logger(__name__)
 
 class PGSqlite(object):
+
+    # From https://stackoverflow.com/a/61478547
+    async def gather_with_concurrency(self, max_coros: int, *coros: Any) -> Any:
+        semaphore = asyncio.Semaphore(max_coros)
+        async def sem_task(coro):
+            async with semaphore:
+                return await coro
+        return await asyncio.gather(*(sem_task(coro) for coro in coros))
 
     def remap_column_type(self, column_type: str) -> str:
         if "STRING" in column_type:
@@ -44,7 +53,7 @@ class PGSqlite(object):
 
 
 
-    def __init__(self, sqlite_filename: str, pg_conninfo: str, show_sample_data: bool = False) -> None:
+    def __init__(self, sqlite_filename: str, pg_conninfo: str, show_sample_data: bool = False, max_import_concurrency: int = 10) -> None:
         self.sqlite_filename = sqlite_filename
         self.pg_conninfo = pg_conninfo
         self.tables_sql = []
@@ -64,6 +73,7 @@ class PGSqlite(object):
         self.transformers = {}
         self.transformers['BOOLEAN'] = self.boolean_transformer
         self.show_sample_data = show_sample_data
+        self.max_import_concurrency = max_import_concurrency
 
     def get_table_sql(self, table: Table) -> SQL:
         create_sql = SQL("CREATE TABLE {table_name} (").format(table_name=Identifier(table.name))
@@ -216,7 +226,15 @@ class PGSqlite(object):
                 self.summary["triggers"][trigge.name]["status"] = "IGNORED"
 
 
-    async def write_table_data(self, table):
+    async def create_index(self, index_sql: str) -> None:
+        async with await psycopg.AsyncConnection.connect(conninfo=self.pg_conninfo) as conn:
+            async with conn.cursor() as pg_cur:
+                index_str = index_sql.as_string(conn)
+                logger.debug(f"Creating index with: {index_str}")
+                await pg_cur.execute(index_sql)
+                logger.debug(f"Finished creating index with: {index_str}")
+
+    async def write_table_data(self, table: str) -> None:
         sl_conn = sqlite3.connect(self.sqlite_filename)
         sl_cur = sl_conn.cursor()
         logger.info(f"Loading data into {table.name}", table=table.name)
@@ -267,7 +285,7 @@ class PGSqlite(object):
         sl_conn.close()
 
         async def load_all_data():
-            await asyncio.gather(*[self.write_table_data(table) for table in db.tables])
+            await self.gather_with_concurrency(self.max_import_concurrency, *[self.write_table_data(table) for table in db.tables])
         load_results = asyncio.run(load_all_data())
 
         if self.show_sample_data:
@@ -319,6 +337,13 @@ class PGSqlite(object):
 
         self.load_data_to_postgres()
 
+        async def create_all_indexes():
+            await self.gather_with_concurrency(self.max_import_concurrency, *[self.create_index(index) for index in self.indexes_sql])
+            for table in self.summary["tables"]["indexes"]:
+                self.summary["tables"]["indexes"][table]["status"] = "CREATED"
+
+        asyncio.run(create_all_indexes())
+
         with psycopg.connect(conninfo=self.pg_conninfo) as conn:
             with conn.cursor() as cur:
                 for fk in self.fks_sql:
@@ -327,14 +352,6 @@ class PGSqlite(object):
                     cur.execute(fk)
                 for table in self.summary["tables"]["fks"]:
                     self.summary["tables"]["fks"][table]["status"] = "CREATED"
-
-                for index in self.indexes_sql:
-                    logger.debug("Running SQL:")
-                    logger.debug(index.as_string(conn))
-                    cur.execute(index)
-                for table in self.summary["tables"]["indexes"]:
-                    self.summary["tables"]["indexes"][table]["status"] = "CREATED"
-
                 # todo: add checks, views, triggers.
 
 
@@ -353,6 +370,12 @@ if __name__ == "__main__":
         type=str,
         help="Postgres URL for the database to import into",
         required=True
+    )
+    parser.add_argument(
+        "--max_import_concurrency",
+        type=int,
+        help="Number of concurrent data import coroutines to run",
+        default=10,
     )
     parser.add_argument(
         "-d",
@@ -395,10 +418,10 @@ if __name__ == "__main__":
     sqlite_filename = args.sqlite_filename
     pg_conninfo = args.postgres_connect_url
 
-    loader = PGSqlite(sqlite_filename, pg_conninfo, show_sample_data=args.show_sample_data)
+    loader = PGSqlite(sqlite_filename, pg_conninfo, show_sample_data=args.show_sample_data, max_import_concurrency=args.max_import_concurrency)
     loader.load_schema(drop_existing_postgres_tables=args.drop_tables)
     loader.populate_postgres()
-    logger.debug(loader.get_summary())
+    logger.debug(json.dumps(loader.get_summary(), indent=2))
 
     if args.drop_tables_after_import:
         loader._drop_tables()
