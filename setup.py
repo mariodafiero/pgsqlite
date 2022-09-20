@@ -10,7 +10,7 @@
 from setuptools import setup, find_packages  # noqa: H301
 
 NAME = "pgsqlite"
-VERSION = "1.0b7"
+VERSION = "1.0b8"
 # To install the library, run the following
 #
 # python setup.py install
@@ -18,7 +18,7 @@ VERSION = "1.0b7"
 # prerequisite: setuptools
 # http://pypi.python.org/pypi/setuptools
 
-REQUIRES = ["sqlite-utils >= 3.28", "psycopg >= 3.1", "psycopg-binary >= 3.1", "structlog >= 22.1.0"]
+REQUIRES = ["sqlite-utils >= 3.28", "psycopg >= 3.1", "psycopg-binary >= 3.1", "structlog >= 22.1.0", "sqlglot >= 6.1.0"]
 
 
 with open("README.md", "r", encoding="utf-8") as fh:
