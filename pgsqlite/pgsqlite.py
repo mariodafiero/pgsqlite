@@ -2,6 +2,7 @@ from sqlite_utils import Database
 from typing import List, Any, Dict, Union, Optional
 from sqlite_utils.db import Table
 import datetime
+import sqlglot
 import json
 import sqlite3
 import psycopg
@@ -29,17 +30,6 @@ class PGSqlite(object):
             async with semaphore:
                 return await coro
         return await asyncio.gather(*(sem_task(coro) for coro in coros))
-
-    def remap_column_type(self, column_type: str) -> str:
-        if "STRING" in column_type:
-            return "TEXT"
-        elif "NVARCHAR" in column_type:
-            return column_type.replace("NVARCHAR", "VARCHAR")
-        elif "DATETIME" in column_type:
-            return "TIMESTAMP"
-        elif "BLOB" in column_type:
-            return "BYTEA"
-        return column_type
 
     def boolean_transformer(self, val: Any, nullable: bool) -> Union[bool, None]:
         if nullable and not val:
@@ -76,18 +66,31 @@ class PGSqlite(object):
         self.max_import_concurrency = max_import_concurrency
 
     def get_table_sql(self, table: Table) -> SQL:
+
+        # This is a little interesting. We can't use sqlglot.transpile directly, since we need to
+        # avoid creating the foreign keys until we've loaded the data, and we don't support views/etc. 
+        # So we assemble the rest of the table DDL by hand.
         create_sql = SQL("CREATE TABLE {table_name} (").format(table_name=Identifier(table.name))
         columns_sql = []
+        cols = {}
+        already_created_pks = [] 
+        for col in sqlglot.parse_one(table.schema, read="sqlite").find_all(sqlglot.exp.ColumnDef):
+            # Fix for two issues in sqlglot
+            col_sql_str = col.sql(dialect="postgres").replace("DATETIME", "TIMESTAMP")
+            if "SERIAL" in col_sql_str:
+                col_sql_str = col_sql_str.replace("INT", "")
+
+                if "PRIMARY KEY SERIAL" in col_sql_str:
+                    col_sql_str = col_sql_str.replace("PRIMARY KEY SERIAL", "SERIAL PRIMARY KEY")
+            cols[col.alias_or_name] = SQL(col_sql_str)
+            if "PRIMARY KEY" in col_sql_str:
+                # don't re-add this constraint later
+                already_created_pks.append(col.alias_or_name)
+
+
         # columns are sorted by column id, so they are created in the "correct" order for any later INSERTS that use the order from, eg, sqlite3.iterdump()
         for column in table.columns:
-            column_type = self.remap_column_type(column.type)
-            column_sql = SQL("    {name} " + column_type).format(name=Identifier(column.name))
-            if column.notnull:
-                column_sql = SQL(" ").join([column_sql, SQL("NOT NULL")])
-            if column.default_value:
-                column_sql = SQL(" ").join([column_sql, SQL("DEFAULT {default_value}").format(default_value=Literal(column.default_value))])
-
-            columns_sql.append(column_sql)
+            columns_sql.append(cols[column.name])
         self.summary["tables"]["columns"][table.name] = {}
         self.summary["tables"]["columns"][table.name]["status"] = "PREPARED"
         self.summary["tables"]["columns"][table.name]["count"] = len(table.columns)
@@ -95,11 +98,12 @@ class PGSqlite(object):
 
         # sqlite appears to generate PK names by splitting on the CamelCasing for the first word, contactting, and prefixing with PK_
         # So let's do something similar
-        if table.pks and not table.use_rowid:
+        pks_to_add = set(table.pks) - set(already_created_pks)
+        if pks_to_add and not table.use_rowid:
             all_column_sql = all_column_sql + SQL(",\n")
-            pk_name = "PK_" + ''.join(table.pks)
+            pk_name = "PK_" + ''.join(pks_to_add)
             pk_sql = SQL("    CONSTRAINT {pk_name} PRIMARY KEY ({pks})").format(
-                    table_name=Identifier(table.name), pk_name=Identifier(pk_name), pks=SQL(", ").join([Identifier(t) for t in table.pks]))
+                    table_name=Identifier(table.name), pk_name=Identifier(pk_name), pks=SQL(", ").join([Identifier(t) for t in pks_to_add]))
             all_column_sql = SQL("    ").join([all_column_sql, pk_sql])
         self.summary["tables"]["pks"][table.name] = {}
         self.summary["tables"]["pks"][table.name]["status"] = "PREPARED"
@@ -285,7 +289,7 @@ class PGSqlite(object):
         sl_conn.close()
 
         async def load_all_data():
-            await self.gather_with_concurrency(self.max_import_concurrency, *[self.write_table_data(table) for table in db.tables])
+            await self.gather_with_concurrency(self.max_import_concurrency, *[self.write_table_data(table) for table in db.tables if table.name != "sqlite_sequence"])
         load_results = asyncio.run(load_all_data())
 
         if self.show_sample_data:
