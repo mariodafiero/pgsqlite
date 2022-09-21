@@ -68,7 +68,7 @@ class PGSqlite(object):
     def get_table_sql(self, table: Table) -> SQL:
 
         # This is a little interesting. We can't use sqlglot.transpile directly, since we need to
-        # avoid creating the foriegn keys until we've loaded the data, and we don't support views/etc. 
+        # avoid creating the foreign keys until we've loaded the data, and we don't support views/etc. 
         # So we assemble the rest of the table DDL by hand.
         create_sql = SQL("CREATE TABLE {table_name} (").format(table_name=Identifier(table.name))
         columns_sql = []
