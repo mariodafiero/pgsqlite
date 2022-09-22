@@ -46,6 +46,10 @@ and also be aware this script will drop everything in the target database, so be
 
 How This Works
 ==============
+
+For more details, read: https://innerjoin.bit.io/introducing-pgsqlite-a-pure-python-module-to-import-sqlite-databases-into-postgres-bf3940cfa19f
+
+
 SQLite is far more forgiving a database then Postgree. Look at this `CREATE TABLE`:
 
 ```
