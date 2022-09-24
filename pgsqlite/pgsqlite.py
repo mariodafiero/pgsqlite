@@ -91,9 +91,10 @@ class PGSqlite(object):
         # columns are sorted by column id, so they are created in the "correct" order for any later INSERTS that use the order from, eg, sqlite3.iterdump()
         for column in table.columns:
             columns_sql.append(cols[column.name])
-        self.summary["tables"]["columns"][table.name] = {}
-        self.summary["tables"]["columns"][table.name]["status"] = "PREPARED"
-        self.summary["tables"]["columns"][table.name]["count"] = len(table.columns)
+        self.summary["tables"]["columns"][table.name] = {
+            "status": "PREPARED",
+            "count": len(table.columns),
+        }
         all_column_sql = SQL(",\n").join(columns_sql)
 
         # sqlite appears to generate PK names by splitting on the CamelCasing for the first word, contactting, and prefixing with PK_
@@ -105,9 +106,10 @@ class PGSqlite(object):
             pk_sql = SQL("    CONSTRAINT {pk_name} PRIMARY KEY ({pks})").format(
                     table_name=Identifier(table.name), pk_name=Identifier(pk_name), pks=SQL(", ").join([Identifier(t) for t in pks_to_add]))
             all_column_sql = SQL("    ").join([all_column_sql, pk_sql])
-        self.summary["tables"]["pks"][table.name] = {}
-        self.summary["tables"]["pks"][table.name]["status"] = "PREPARED"
-        self.summary["tables"]["pks"][table.name]["count"] = len(table.pks)
+        self.summary["tables"]["pks"][table.name] = {
+            "status": "PREPARED",
+            "count": len(table.pks),
+        }
 
 
         self.summary["tables"]["checks"][table.name] = {}
@@ -133,9 +135,10 @@ class PGSqlite(object):
             fk_sql = SQL("ALTER TABLE {table_name} ADD CONSTRAINT {key_name}  FOREIGN KEY ({column}) REFERENCES {other_table} ({other_column})").format(table_name=Identifier(table.name),
                 column=Identifier(fk.column), key_name=Identifier(fk_name), other_table=Identifier(fk.other_table), other_column=Identifier(fk.other_column))
             sql.append(fk_sql)
-        self.summary["tables"]["fks"][table.name] = {}
-        self.summary["tables"]["fks"][table.name]["status"] = "PREPARED"
-        self.summary["tables"]["fks"][table.name]["count"] = len(table.foreign_keys)
+        self.summary["tables"]["fks"][table.name] = {
+            "status": "PREPARED",
+            "count": len(table.foreign_keys),
+        }
         return sql
 
     def get_index_sql(self, table: Table) -> SQL:
@@ -153,9 +156,10 @@ class PGSqlite(object):
             index_sql = SQL("CREATE INDEX {index_name} ON {table_name} ({columns})").format(index_name = Identifier(index.name),
                 table_name=Identifier(table.name), columns=SQL(",").join(col_sql))
             sql.append(index_sql)
-        self.summary["tables"]["indexes"][table.name] = {}
-        self.summary["tables"]["indexes"][table.name]["status"] = "PREPARED"
-        self.summary["tables"]["indexes"][table.name]["count"] = len(table.xindexes)
+        self.summary["tables"]["indexes"][table.name] = {
+            "status": "PREPARED",
+            "count": len(table.xindexes),
+        }
         return sql
 
 
@@ -220,14 +224,16 @@ class PGSqlite(object):
             for view in db.views:
                 # there's a bug here in the sqlite_utils library where this fails
                 logger.debug(f"DB view: {view}", view=view)
-                self.summary["views"][view.name] = {}
-                self.summary["views"][view.name]["status"] = "IGNORED"
+                self.summary["views"][view.name] = {
+                    "status": "IGNORED",
+                }
         if not _IGNORE_TRIGGERS:
             logger.debug("Ignoring views")
             for trigger in db.triggers:
                 logger.debug(f"DB trigger: {trigger}", trigger=trigger)
-                self.summary["triggers"][trigger.name] = {}
-                self.summary["triggers"][trigge.name]["status"] = "IGNORED"
+                self.summary["triggers"][trigger.name] = {
+                    "status": "IGNORED",
+                }
 
 
     async def create_index(self, index_sql: str) -> None:
@@ -283,9 +289,10 @@ class PGSqlite(object):
             # Given the table name came from the SQLITE database, and we're using it
             # to read from the sqlite database, we are okay with the literal substitution here
             sl_cur.execute(f'SELECT count(*) FROM "{table.name}"')
-            self.summary["tables"]["data"][table.name] = {}
-            self.summary["tables"]["data"][table.name]["row_count"] = sl_cur.fetchone()[0]
-            self.summary["tables"]["data"][table.name]["status"] = "PREPARED"
+            self.summary["tables"]["data"][table.name] = {
+                "row_count": sl_cur.fetchone()[0],
+                "status": "PREPARED",
+            }
         sl_conn.close()
 
         async def load_all_data():
@@ -335,9 +342,9 @@ class PGSqlite(object):
                     logger.debug(create_sql.as_string(conn))
                     cur.execute(create_sql)
             for table in self.summary["tables"]["columns"]:
-                self.summary["tables"]["columns"][table]["status"] = "CREATED"
+                table["status"] = "CREATED"
             for table in self.summary["tables"]["pks"]:
-                self.summary["tables"]["pks"][table]["status"] = "CREATED"
+                table["status"] = "CREATED"
 
         self.load_data_to_postgres()
 
