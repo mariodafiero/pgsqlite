@@ -102,7 +102,7 @@ class PGSqlite(object):
         pks_to_add = set(table.pks) - set(already_created_pks)
         if pks_to_add and not table.use_rowid:
             all_column_sql = all_column_sql + SQL(",\n")
-            pk_name = "PK_" + ''.join(pks_to_add)
+            pk_name = f"PK_{table.name}_" + ''.join(pks_to_add)
             pk_sql = SQL("    CONSTRAINT {pk_name} PRIMARY KEY ({pks})").format(
                     table_name=Identifier(table.name), pk_name=Identifier(pk_name), pks=SQL(", ").join([Identifier(t) for t in pks_to_add]))
             all_column_sql = SQL("    ").join([all_column_sql, pk_sql])
@@ -341,10 +341,10 @@ class PGSqlite(object):
                     logger.debug("Running SQL:")
                     logger.debug(create_sql.as_string(conn))
                     cur.execute(create_sql)
-            for table in self.summary["tables"]["columns"]:
-                table["status"] = "CREATED"
-            for table in self.summary["tables"]["pks"]:
-                table["status"] = "CREATED"
+            for column in self.summary["tables"]["columns"].values():
+                column["status"] = "CREATED"
+            for pk in self.summary["tables"]["pks"].values():
+                pk["status"] = "CREATED"
 
         self.load_data_to_postgres()
 
