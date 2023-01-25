@@ -54,7 +54,7 @@ class ParsedTable(object):
     @property
     def columns(self):
         if self._columns is None:
-            # TODO: Handle case where ColumnDef has no type, causing sqlglot to
+            # Note for later PR: Handle case where ColumnDef has no type, causing sqlglot to
             # come up one column short. We want to impute a TEXT data type in
             # that case.
             parsed_cols = list(self.parsed_table.find_all(sqlglot.exp.ColumnDef))
@@ -67,7 +67,7 @@ class ParsedTable(object):
         return self._columns
 
     def get_transpiled_colname(self, source_colname: str) -> str:
-        # TODO: this lookup could be optimized with a dict
+        # Note for later PR: this lookup could be optimized with a dict
         for col in self.columns:
             if col.source_name == source_colname:
                 return col.transpiled_name
@@ -152,14 +152,14 @@ class PGSqlite(object):
         return self._tables
 
     def get_transpiled_tablename(self, source_tablename: str) -> str:
-        # TODO: this lookup could be optimized with a dict
+        # Note for later PR: this lookup could be optimized with a dict
         for table in self.tables:
             if table.source_name == source_tablename:
                 return table.transpiled_name
         raise ValueError("Requested transpiled name for unrecognized source table")
 
     def get_transpiled_colname(self, source_tablename: str, source_colname: str) -> str:
-        # TODO: this lookup could be optimized with a dict
+        # Note for later PR:  this lookup could be optimized with a dict
         for table in self.tables:
             if table.source_name == source_tablename:
                 return table.get_transpiled_colname(source_colname)
@@ -313,7 +313,7 @@ class PGSqlite(object):
         return tables_in_postgres
 
     def check_for_matching_tables(self) -> bool:
-        # TODO: implement me
+        # Note for later PR: implement me
         db = Database(self.sqlite_filename)
         tables_in_postgres = self.get_all_tables_in_postgres()
         return False
