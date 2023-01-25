@@ -54,10 +54,23 @@ class ParsedTable(object):
     @property
     def columns(self):
         if self._columns is None:
-            # TODO: Handle case where ColumnDef has no type, causing sqlglot to
-            # come up one column short. We want to impute a TEXT data type in
-            # that case.
-            parsed_cols = list(self.parsed_table.find_all(sqlglot.exp.ColumnDef))
+            parsed_cols = []
+            # Iterate over sub-expressions at table-schema level
+            for exp in self.parsed_table.this.expressions:
+                # Use ColumDefs directly
+                if isinstance(exp, sqlglot.exp.ColumnDef):
+                    parsed_cols.append(exp)
+                # Use base Identifiers to construct ColumnDefs w/ TEXT data type
+                elif isinstance(exp, sqlglot.exp.Identifier):
+                    col_def = sqlglot.exp.ColumnDef(
+                        this=exp,
+                        kind=sqlglot.exp.DataType(
+                            this=sqlglot.exp.DataType.Type.TEXT
+                        ),
+                    )
+                    parsed_cols.append(col_def)
+                # We could raise on an else here, but can just ignore unexpected
+                # expressions and try to finish processing
             if len(self._table.columns) != len(parsed_cols):
                 raise SchemaError(f"sqlite_utils and sqlglot disagree on number of columns in table {self.source_name}")
             self._columns = [
@@ -452,6 +465,7 @@ class PGSqlite(object):
         with psycopg.connect(conninfo=self.pg_conninfo) as conn:
             with conn.cursor() as cur:
                 for create_sql in self.tables_sql:
+                    breakpoint()
                     logger.debug("Running SQL:")
                     logger.debug(create_sql.as_string(conn))
                     cur.execute(create_sql)
