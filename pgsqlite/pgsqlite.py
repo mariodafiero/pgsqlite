@@ -24,6 +24,11 @@ SQLITE_SYSTEM_TABLES = ["sqlite_sequence", "sqlite_stat1", "sqlite_user"]
 logger = structlog.get_logger(__name__)
 
 
+class SchemaError(Exception):
+    """Raise for schema conditions that are invalid for pgsqlite"""
+    pass
+
+
 # We currently use both sqlite_utils and sqglot to extract and transpile database
 # schemas. ParsedTable (ParsedColumn) wraps both representations of each table
 # (column) object so that equivalent objects remain synced.
@@ -545,8 +550,3 @@ if __name__ == "__main__":
 
     if args.drop_tables_after_import:
         loader._drop_tables()
-
-
-class SchemaError(Exception):
-    """Raise for schema conditions that are invalid for pgsqlite"""
-    pass
