@@ -60,18 +60,17 @@ class ParsedTable(object):
             parsed_cols = list(self.parsed_table.find_all(sqlglot.exp.ColumnDef))
             if len(self._table.columns) != len(parsed_cols):
                 raise SchemaError(f"sqlite_utils and sqlglot disagree on number of columns in table {self.source_name}")
-            self._columns = [
-                ParsedColumn(col, parsed_col)
+            self._columns = {
+                col.name: ParsedColumn(col, parsed_col)
                 for col, parsed_col in zip(self._table.columns, parsed_cols)
-            ]
+            }
         return self._columns
 
     def get_transpiled_colname(self, source_colname: str) -> str:
-        # Note for later PR: this lookup could be optimized with a dict
-        for col in self.columns:
-            if col.source_name == source_colname:
-                return col.transpiled_name
-        raise ValueError("Requested transpiled name for unrecognized source column")
+        try:
+            return self.columns[source_colname].transpiled_name
+        except KeyError as e:
+            raise ValueError("Requested transpiled name for unrecognized source column") from e
 
 
 class ParsedColumn(object):
@@ -148,22 +147,20 @@ class PGSqlite(object):
     def tables(self):
         if self._tables is None:
             db = Database(self.sqlite_filename)
-            self._tables = [ParsedTable(t) for t in db.tables]
+            self._tables = {t.name: ParsedTable(t) for t in db.tables}
         return self._tables
 
     def get_transpiled_tablename(self, source_tablename: str) -> str:
-        # Note for later PR: this lookup could be optimized with a dict
-        for table in self.tables:
-            if table.source_name == source_tablename:
-                return table.transpiled_name
-        raise ValueError("Requested transpiled name for unrecognized source table")
+        try:
+            return self.tables[source_tablename].transpiled_name
+        except KeyError as e:
+            raise ValueError("Requested transpiled name for unrecognized source table") from e
 
     def get_transpiled_colname(self, source_tablename: str, source_colname: str) -> str:
-        # Note for later PR:  this lookup could be optimized with a dict
-        for table in self.tables:
-            if table.source_name == source_tablename:
-                return table.get_transpiled_colname(source_colname)
-        raise ValueError("Requested transpiled name for unrecognized source table and column")
+        try:
+            return self.tables[source_tablename].get_transpiled_colname(source_colname)
+        except KeyError as e:
+            raise ValueError("Requested transpiled name for unrecognized source table") from e
 
     def get_table_sql(self, table: ParsedTable) -> SQL:
 
@@ -174,7 +171,7 @@ class PGSqlite(object):
         columns_sql = []
         cols = {}
         already_created_pks = [] 
-        for col in table.columns:
+        for col in table.columns.values():
             # Fix for issues in sqlglot
             # NOTE: embedded foreign key references are already stripped from parsed_column 
             col_sql_str = col.parsed_column.sql(dialect="postgres")
@@ -188,7 +185,7 @@ class PGSqlite(object):
                 already_created_pks.append(col.source_name)
 
         # columns are sorted by column id, so they are created in the "correct" order for any later INSERTS that use the order from, eg, sqlite3.iterdump()
-        for column in table.columns:
+        for column in table.columns.values():
             columns_sql.append(cols[column.source_name])
         self.summary["tables"]["columns"][table.source_name] = {
             "status": "PREPARED",
@@ -280,7 +277,7 @@ class PGSqlite(object):
     def _drop_tables(self):
         with psycopg.connect(conninfo=self.pg_conninfo) as conn:
             with conn.cursor() as cur:
-                for table in self.tables:
+                for table in self.tables.values():
                     cur.execute(
                         SQL("DROP TABLE IF EXISTS {table_name} CASCADE;").format(table_name=SQL(table.transpiled_name))
                     )
@@ -324,7 +321,7 @@ class PGSqlite(object):
             self._drop_tables()
 
         self.checks_sql_by_table = self.get_check_constraints()
-        for table in self.tables:
+        for table in self.tables.values():
             if table.source_name in SQLITE_SYSTEM_TABLES:
                 logger.debug(f"sqlite system table found: {table.source_name}")
                 continue
@@ -364,7 +361,7 @@ class PGSqlite(object):
         # to read from the sqlite database, we are okay with the literal substitution here
         sl_cur.execute(f'SELECT * FROM "{table.source_name}"')
         nullable_column_indexes = []
-        for idx, c in enumerate(table.columns):
+        for idx, c in enumerate(table.columns.values()):
             if not c._column.notnull:
                 nullable_column_indexes.append(idx)
 
@@ -375,7 +372,7 @@ class PGSqlite(object):
                     rows_copied = 0
                     for row in sl_cur:
                         row = list(row)
-                        for idx, c in enumerate(table.columns):
+                        for idx, c in enumerate(table.columns.values()):
                             if c._column.type in self.transformers:
                                 row[idx] = self.transformers[c._column.type](row[idx], not c._column.notnull)
                             if not c._column.notnull:
@@ -410,12 +407,12 @@ class PGSqlite(object):
         async def load_all_data():
             await self.gather_with_concurrency(
                 self.max_import_concurrency,
-                *[self.write_table_data(table) for table in self.tables],
+                *[self.write_table_data(table) for table in self.tables.values()],
             )
         load_results = asyncio.run(load_all_data())
 
         if self.show_sample_data:
-            for table in self.tables:
+            for table in self.tables.values():
                 with psycopg.connect(conninfo=self.pg_conninfo) as conn:
                     with conn.cursor() as cur:
                         cur.execute(f'SELECT * from "{table.transpiled_name}" LIMIT 10')
