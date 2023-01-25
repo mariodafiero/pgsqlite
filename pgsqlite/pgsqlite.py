@@ -36,7 +36,7 @@ class ParsedTable(object):
     """Wraps a parsed sqlite_utils.db.Table and exposes transpiled identifiers."""
     
     def __init__(self, table: sqlite_utils.db.Table):
-        self._table = table
+        self.src_table = table
         self.parsed_table = sqlglot.parse_one(table.schema, read="sqlite")
         self._tsp_table_name = (self.parsed_table.find(sqlglot.exp.Table)
                                                  .find(sqlglot.exp.Identifier)
@@ -45,7 +45,7 @@ class ParsedTable(object):
     
     @property
     def source_name(self):
-        return self._table.name
+        return self.src_table.name
 
     @property
     def transpiled_name(self):
@@ -58,20 +58,19 @@ class ParsedTable(object):
             # come up one column short. We want to impute a TEXT data type in
             # that case.
             parsed_cols = list(self.parsed_table.find_all(sqlglot.exp.ColumnDef))
-            if len(self._table.columns) != len(parsed_cols):
+            if len(self.src_table.columns) != len(parsed_cols):
                 raise SchemaError(f"sqlite_utils and sqlglot disagree on number of columns in table {self.source_name}")
-            self._columns = [
-                ParsedColumn(col, parsed_col)
-                for col, parsed_col in zip(self._table.columns, parsed_cols)
-            ]
-        return self._columns
+            self._columns = {
+                col.name: ParsedColumn(col, parsed_col)
+                for col, parsed_col in zip(self.src_table.columns, parsed_cols)
+            }
+        return self._columns.values()
 
     def get_transpiled_colname(self, source_colname: str) -> str:
-        # Note for later PR: this lookup could be optimized with a dict
-        for col in self.columns:
-            if col.source_name == source_colname:
-                return col.transpiled_name
-        raise ValueError("Requested transpiled name for unrecognized source column")
+        try:
+            return self._columns[source_colname].transpiled_name
+        except KeyError as e:
+            raise ValueError("Requested transpiled name for unrecognized source column") from e
 
 
 class ParsedColumn(object):
@@ -81,7 +80,7 @@ class ParsedColumn(object):
     the generated CREATE TABLE statements. 
     """
     def __init__(self, column: sqlite_utils.db.Column, parsed_column: sqlglot.expressions.ColumnDef):
-        self._column = column
+        self.src_column = column
         # NOTE: must pop embedded foreign key constraints from col def AST to
         # avoid data-loading conflicts. The foreign keys are added back after
         # data loading using schema data from sqlite_utils.
@@ -93,7 +92,7 @@ class ParsedColumn(object):
     
     @property
     def source_name(self):
-        return self._column.name
+        return self.src_column.name
 
     @property
     def transpiled_name(self):
@@ -148,22 +147,20 @@ class PGSqlite(object):
     def tables(self):
         if self._tables is None:
             db = Database(self.sqlite_filename)
-            self._tables = [ParsedTable(t) for t in db.tables]
-        return self._tables
+            self._tables = {t.name: ParsedTable(t) for t in db.tables}
+        return self._tables.values()
 
     def get_transpiled_tablename(self, source_tablename: str) -> str:
-        # Note for later PR: this lookup could be optimized with a dict
-        for table in self.tables:
-            if table.source_name == source_tablename:
-                return table.transpiled_name
-        raise ValueError("Requested transpiled name for unrecognized source table")
+        try:
+            return self._tables[source_tablename].transpiled_name
+        except KeyError as e:
+            raise ValueError("Requested transpiled name for unrecognized source table") from e
 
     def get_transpiled_colname(self, source_tablename: str, source_colname: str) -> str:
-        # Note for later PR:  this lookup could be optimized with a dict
-        for table in self.tables:
-            if table.source_name == source_tablename:
-                return table.get_transpiled_colname(source_colname)
-        raise ValueError("Requested transpiled name for unrecognized source table and column")
+        try:
+            return self._tables[source_tablename].get_transpiled_colname(source_colname)
+        except KeyError as e:
+            raise ValueError("Requested transpiled name for unrecognized source table") from e
 
     def get_table_sql(self, table: ParsedTable) -> SQL:
 
@@ -198,8 +195,8 @@ class PGSqlite(object):
 
         # sqlite appears to generate PK names by splitting on the CamelCasing for the first word, concatting, and prefixing with PK_
         # So let's do something similar
-        pks_to_add = set(table._table.pks) - set(already_created_pks)
-        if pks_to_add and not table._table.use_rowid:
+        pks_to_add = set(table.src_table.pks) - set(already_created_pks)
+        if pks_to_add and not table.src_table.use_rowid:
             # Need to map pk columns to transpiled identifiers
             transpiled_pks_to_add = [table.get_transpiled_colname(pk) for pk in pks_to_add]
             all_column_sql = all_column_sql + SQL(",\n")
@@ -213,7 +210,7 @@ class PGSqlite(object):
             all_column_sql = SQL("    ").join([all_column_sql, pk_sql])
         self.summary["tables"]["pks"][table.source_name] = {
             "status": "PREPARED",
-            "count": len(table._table.pks),
+            "count": len(table.src_table.pks),
         }
 
         self.summary["tables"]["checks"][table.source_name] = {}
@@ -234,7 +231,7 @@ class PGSqlite(object):
     def get_fk_sql(self, table: ParsedTable) -> SQL:
         sql = []
         # create the foreign keys after the tables to avoid having to figure out the dep graph
-        for fk in table._table.foreign_keys:
+        for fk in table.src_table.foreign_keys:
             fk_name = f"FK_{fk.other_table}_{fk.other_column}"
             fk_sql = SQL("ALTER TABLE {table_name} ADD CONSTRAINT {key_name}  FOREIGN KEY ({column}) REFERENCES {other_table} ({other_column})").format(
                 table_name=SQL(table.transpiled_name),
@@ -246,13 +243,13 @@ class PGSqlite(object):
             sql.append(fk_sql)
         self.summary["tables"]["fks"][table.source_name] = {
             "status": "PREPARED",
-            "count": len(table._table.foreign_keys),
+            "count": len(table.src_table.foreign_keys),
         }
         return sql
 
     def get_index_sql(self, table: ParsedTable) -> SQL:
         sql = []
-        for index in table._table.xindexes:
+        for index in table.src_table.xindexes:
             col_sql = []
             for col in index.columns:
                 if not col.name:
@@ -273,7 +270,7 @@ class PGSqlite(object):
             sql.append(index_sql)
         self.summary["tables"]["indexes"][table.source_name] = {
             "status": "PREPARED",
-            "count": len(table._table.xindexes),
+            "count": len(table.src_table.xindexes),
         }
         return sql
 
@@ -365,7 +362,7 @@ class PGSqlite(object):
         sl_cur.execute(f'SELECT * FROM "{table.source_name}"')
         nullable_column_indexes = []
         for idx, c in enumerate(table.columns):
-            if not c._column.notnull:
+            if not c.src_column.notnull:
                 nullable_column_indexes.append(idx)
 
         # For any non-null column, allow convert from empty string to None
@@ -376,9 +373,9 @@ class PGSqlite(object):
                     for row in sl_cur:
                         row = list(row)
                         for idx, c in enumerate(table.columns):
-                            if c._column.type in self.transformers:
-                                row[idx] = self.transformers[c._column.type](row[idx], not c._column.notnull)
-                            if not c._column.notnull:
+                            if c.src_column.type in self.transformers:
+                                row[idx] = self.transformers[c.src_column.type](row[idx], not c.src_column.notnull)
+                            if not c.src_column.notnull:
                                 # for numeric types, we need to be we don't evaluate False on a 0
                                 if row[idx] != 0 and not row[idx]:
                                     row[idx] = None
