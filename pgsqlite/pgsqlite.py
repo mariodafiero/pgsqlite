@@ -465,7 +465,6 @@ class PGSqlite(object):
         with psycopg.connect(conninfo=self.pg_conninfo) as conn:
             with conn.cursor() as cur:
                 for create_sql in self.tables_sql:
-                    breakpoint()
                     logger.debug("Running SQL:")
                     logger.debug(create_sql.as_string(conn))
                     cur.execute(create_sql)
