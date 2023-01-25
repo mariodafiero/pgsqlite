@@ -38,9 +38,9 @@ class ParsedTable(object):
     def __init__(self, table: sqlite_utils.db.Table):
         self._table = table
         self.parsed_table = sqlglot.parse_one(table.schema, read="sqlite")
-        # The first identifier in a parsed CREATE statement is the table name
-        self._tsp_table_name = (self.parsed_table.find(sqlglot.expressions.Identifier)
-                                                  .sql(dialect="postgres"))
+        self._tsp_table_name = (self.parsed_table.find(sqlglot.exp.Table)
+                                                 .find(sqlglot.exp.Identifier)
+                                                 .sql(dialect="postgres"))
         self._columns = None
     
     @property
