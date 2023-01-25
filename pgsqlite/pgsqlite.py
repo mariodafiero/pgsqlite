@@ -541,10 +541,10 @@ if __name__ == "__main__":
     loader = PGSqlite(sqlite_filename, pg_conninfo, show_sample_data=args.show_sample_data, max_import_concurrency=args.max_import_concurrency)
     loader.load_schema(drop_existing_postgres_tables=args.drop_tables)
     loader.populate_postgres()
-    # logger.debug(json.dumps(loader.get_summary(), indent=2))
+    logger.debug(json.dumps(loader.get_summary(), indent=2))
 
-    # if args.drop_tables_after_import:
-    #     loader._drop_tables()
+    if args.drop_tables_after_import:
+        loader._drop_tables()
 
 
 class SchemaError(Exception):
