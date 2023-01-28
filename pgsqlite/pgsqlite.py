@@ -55,7 +55,20 @@ class ParsedTable(object):
     def columns(self):
         if self._columns is None:
             parsed_cols = []
-            # Iterate over sub-expressions at table-schema level
+            # Unlike Postgres, SQLite allows columns without data types.
+            # NOTE: see test_schema/typeless_columns.sql for an example
+            # When sqlglot parses a table with typeless columns, if parses
+            # the typless column as a bare Identifier rather than as a ColumnDef.
+            # e.g.
+            # Table
+            #  - ColDef
+            #  - Identifier
+            #  - ColDef
+            #  ...
+            # Therefore, we need to iterate over the direct children of the Table
+            # expression, and replace any bare Identifiers as ColumnDef w/ TEXT
+            # data type. The rationale for TEXT datatype is that SQLite uses a
+            # similar fallback when data does not match its column type. 
             for exp in self.parsed_table.this.expressions:
                 # Use ColumDefs directly
                 if isinstance(exp, sqlglot.exp.ColumnDef):
