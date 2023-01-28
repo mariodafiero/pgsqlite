@@ -38,9 +38,15 @@ class ParsedTable(object):
     def __init__(self, table: sqlite_utils.db.Table):
         self.src_table = table
         self.parsed_table = sqlglot.parse_one(table.schema, read="sqlite")
-        self._tsp_table_name = (self.parsed_table.find(sqlglot.exp.Table)
-                                                 .find(sqlglot.exp.Identifier)
-                                                 .sql(dialect="postgres"))
+        # When we compose SQL w/ psycopg2.sql, values wrapped in Identifier are
+        # automatically quoted in Postgres. Therefore, we need to inspect for
+        # sqlite quotes and lower when quotes are not present to avoid mapping
+        # identifiers like `FOO` -> `"FOO"` as opposed to the expected `foo`
+        table_identifier = (self.parsed_table.find(sqlglot.exp.Table)
+                                             .find(sqlglot.exp.Identifier))
+        self._tsp_table_name = table_identifier.this
+        if not table_identifier.quoted:
+            self._tsp_table_name = self._tsp_table_name.lower()                      
         self._columns = None
     
     @property
@@ -113,8 +119,14 @@ class ParsedColumn(object):
         if (fk := parsed_column.find(sqlglot.exp.Reference)):
             fk.pop()
         self.parsed_column = parsed_column
-        self._tsp_column_name = (self.parsed_column.find(sqlglot.expressions.Identifier)
-                                                   .sql(dialect="postgres"))
+        # When we compose SQL w/ psycopg2.sql, values wrapped in Identifier are
+        # automatically quoted in Postgres. Therefore, we need to inspect for
+        # sqlite quotes and lower when quotes are not present to avoid mapping
+        # identifiers like `FOO` -> `"FOO"` as opposed to the expected `foo`
+        column_identifier = self.parsed_column.find(sqlglot.expressions.Identifier)
+        self._tsp_column_name = column_identifier.this
+        if not column_identifier.quoted:
+            self._tsp_column_name = self._tsp_column_name.lower()   
     
     @property
     def source_name(self):
@@ -193,7 +205,7 @@ class PGSqlite(object):
         # This is a little interesting. We can't use sqlglot.transpile directly, since we need to
         # avoid creating the foreign keys until we've loaded the data, and we don't support views/etc. 
         # So we assemble the rest of the table DDL by hand.
-        create_sql = SQL("CREATE TABLE {table_name} (").format(table_name=SQL(table.transpiled_name))
+        create_sql = SQL("CREATE TABLE {table_name} (").format(table_name=Identifier(table.transpiled_name))
         columns_sql = []
         cols = {}
         already_created_pks = [] 
@@ -228,7 +240,7 @@ class PGSqlite(object):
             all_column_sql = all_column_sql + SQL(",\n")
             pk_name = f"PK_{table.source_name}_" + ''.join(pks_to_add)
             pk_sql = SQL("    CONSTRAINT {pk_name} PRIMARY KEY ({pks})").format(
-                    table_name=SQL(table.transpiled_name),
+                    table_name=Identifier(table.transpiled_name),
                     pk_name=Identifier(pk_name), pks=SQL(", ").join(
                         [Identifier(t) for t in transpiled_pks_to_add]
                     ),
@@ -260,11 +272,11 @@ class PGSqlite(object):
         for fk in table.src_table.foreign_keys:
             fk_name = f"FK_{fk.other_table}_{fk.other_column}"
             fk_sql = SQL("ALTER TABLE {table_name} ADD CONSTRAINT {key_name}  FOREIGN KEY ({column}) REFERENCES {other_table} ({other_column})").format(
-                table_name=SQL(table.transpiled_name),
-                column=SQL(table.get_transpiled_colname(fk.column)),
+                table_name=Identifier(table.transpiled_name),
+                column=Identifier(table.get_transpiled_colname(fk.column)),
                 key_name=Identifier(fk_name),
-                other_table=SQL(self.get_transpiled_tablename(fk.other_table)),
-                other_column=SQL(self.get_transpiled_colname(fk.other_table, fk.other_column)),
+                other_table=Identifier(self.get_transpiled_tablename(fk.other_table)),
+                other_column=Identifier(self.get_transpiled_colname(fk.other_table, fk.other_column)),
             )
             sql.append(fk_sql)
         self.summary["tables"]["fks"][table.source_name] = {
@@ -284,13 +296,13 @@ class PGSqlite(object):
                 if col.desc:
                     order="DESC"
                 col_sql.append(SQL("{name} {sort_order}").format(
-                    name=SQL(table.get_transpiled_colname(col.name)),
+                    name=Identifier(table.get_transpiled_colname(col.name)),
                     sort_order=SQL(order)),
                 )
 
             index_sql = SQL("CREATE INDEX {index_name} ON {table_name} ({columns})").format(
                 index_name = Identifier(index.name),
-                table_name=SQL(table.transpiled_name),
+                table_name=Identifier(table.transpiled_name),
                 columns=SQL(",").join(col_sql)
             )
             sql.append(index_sql)
@@ -305,7 +317,7 @@ class PGSqlite(object):
             with conn.cursor() as cur:
                 for table in self.tables:
                     cur.execute(
-                        SQL("DROP TABLE IF EXISTS {table_name} CASCADE;").format(table_name=SQL(table.transpiled_name))
+                        SQL("DROP TABLE IF EXISTS {table_name} CASCADE;").format(table_name=Identifier(table.transpiled_name))
                     )
 
     def get_all_tables_in_postgres(self) -> Optional[List[Any]]:
@@ -394,7 +406,7 @@ class PGSqlite(object):
         # For any non-null column, allow convert from empty string to None
         async with await psycopg.AsyncConnection.connect(conninfo=self.pg_conninfo) as conn:
             async with conn.cursor() as pg_cur:
-                async with pg_cur.copy(f'COPY {table.transpiled_name} FROM STDIN') as copy:
+                async with pg_cur.copy(f'COPY "{table.transpiled_name}" FROM STDIN') as copy:
                     rows_copied = 0
                     for row in sl_cur:
                         row = list(row)

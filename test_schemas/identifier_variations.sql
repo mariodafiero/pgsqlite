@@ -43,6 +43,14 @@ CREATE TABLE `PARENT_E` (
     `BAZ` TEXT
 );
 
+-- non-ascii, quoted
+CREATE TABLE "parent_f@/" (
+    "id@/" INTEGER PRIMARY KEY,
+    foo TEXT,
+    bar TEXT,
+    baz TEXT
+);
+
 -- child table referencing all parent tables
 CREATE TABLE child (
     child_id INTEGER PRIMARY KEY,
@@ -51,7 +59,8 @@ CREATE TABLE child (
     b_id INTEGER REFERENCES PARENT_B (ID),
     c_id INTEGER REFERENCES "PARENT_C" ("ID"),
     d_id INTEGER REFERENCES [PARENT_D] ([ID]),
-    e_id INTEGER REFERENCES `PARENT_E` (`ID`)
+    e_id INTEGER REFERENCES `PARENT_E` (`ID`),
+    f_id INTEGER REFERENCES "parent_f@/" ("id@/")
 );
 
 -- also test single and multi-column indexes with all variations
@@ -69,6 +78,9 @@ CREATE INDEX parent_d_multi_col ON [PARENT_D] ([BAR], [BAZ]);
 
 CREATE INDEX parent_e_single_col ON `PARENT_E` (`FOO`);
 CREATE INDEX parent_e_multi_col ON `PARENT_E` (`BAR`, `BAZ`);
+
+CREATE INDEX parent_f_single_col ON "parent_f@/" ("id@/");
+CREATE INDEX parent_f_multi_col ON "parent_f@/" ("id@/", foo);
 
 /* 
 In addition to double-quotes, brackets, and backticks, sqlite also "unofficially"
@@ -100,6 +112,10 @@ INSERT INTO `PARENT_E` VALUES
   (1, "apple", "orange", "banana"),
   (2, "orange", "apple", "banana");
 
+INSERT INTO "parent_f@/" VALUES
+  (1, "apple", "orange", "banana"),
+  (2, "orange", "apple", "banana");
+
 INSERT INTO child VALUES
-  (1, 'a', 1, 1, 1, 1, 1),
-  (2, 'b', 2, 2, 2, 2, 2);
+  (1, 'a', 1, 1, 1, 1, 1, 1),
+  (2, 'b', 2, 2, 2, 2, 2, 2);
