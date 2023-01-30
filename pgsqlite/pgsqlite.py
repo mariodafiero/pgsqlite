@@ -46,8 +46,44 @@ class ParsedTable(object):
                                              .find(sqlglot.exp.Identifier))
         self._tsp_table_name = table_identifier.this
         if not table_identifier.quoted:
-            self._tsp_table_name = self._tsp_table_name.lower()                      
-        self._columns = None
+            self._tsp_table_name = self._tsp_table_name.lower()
+        # Populate parsed columns                      
+        parsed_cols = []
+        # Unlike Postgres, SQLite allows columns without data types.
+        # NOTE: see test_schema/typeless_columns.sql for an example
+        # When sqlglot parses a table with typeless columns, if parses
+        # the typless column as a bare Identifier rather than as a ColumnDef.
+        # e.g.
+        # Table
+        #  - ColDef
+        #  - Identifier
+        #  - ColDef
+        #  ...
+        # Therefore, we need to iterate over the direct children of the Table
+        # expression, and replace any bare Identifiers as ColumnDef w/ TEXT
+        # data type. The rationale for TEXT datatype is that SQLite uses a
+        # similar fallback when data does not match its column type. 
+        for exp in self.parsed_table.this.expressions:
+            # Use ColumDefs directly
+            if isinstance(exp, sqlglot.exp.ColumnDef):
+                parsed_cols.append(exp)
+            # Use base Identifiers to construct ColumnDefs w/ TEXT data type
+            elif isinstance(exp, sqlglot.exp.Identifier):
+                col_def = sqlglot.exp.ColumnDef(
+                    this=exp,
+                    kind=sqlglot.exp.DataType(
+                        this=sqlglot.exp.DataType.Type.TEXT
+                    ),
+                )
+                parsed_cols.append(col_def)
+            # We could raise on an else here, but can just ignore unexpected
+            # expressions and try to finish processing
+        if len(self.src_table.columns) != len(parsed_cols):
+            raise SchemaError(f"sqlite_utils and sqlglot disagree on number of columns in table {self.source_name}")
+        self._columns = {
+            col.name: ParsedColumn(col, parsed_col)
+            for col, parsed_col in zip(self.src_table.columns, parsed_cols)
+        }
     
     @property
     def source_name(self):
@@ -59,43 +95,6 @@ class ParsedTable(object):
 
     @property
     def columns(self):
-        if self._columns is None:
-            parsed_cols = []
-            # Unlike Postgres, SQLite allows columns without data types.
-            # NOTE: see test_schema/typeless_columns.sql for an example
-            # When sqlglot parses a table with typeless columns, if parses
-            # the typless column as a bare Identifier rather than as a ColumnDef.
-            # e.g.
-            # Table
-            #  - ColDef
-            #  - Identifier
-            #  - ColDef
-            #  ...
-            # Therefore, we need to iterate over the direct children of the Table
-            # expression, and replace any bare Identifiers as ColumnDef w/ TEXT
-            # data type. The rationale for TEXT datatype is that SQLite uses a
-            # similar fallback when data does not match its column type. 
-            for exp in self.parsed_table.this.expressions:
-                # Use ColumDefs directly
-                if isinstance(exp, sqlglot.exp.ColumnDef):
-                    parsed_cols.append(exp)
-                # Use base Identifiers to construct ColumnDefs w/ TEXT data type
-                elif isinstance(exp, sqlglot.exp.Identifier):
-                    col_def = sqlglot.exp.ColumnDef(
-                        this=exp,
-                        kind=sqlglot.exp.DataType(
-                            this=sqlglot.exp.DataType.Type.TEXT
-                        ),
-                    )
-                    parsed_cols.append(col_def)
-                # We could raise on an else here, but can just ignore unexpected
-                # expressions and try to finish processing
-            if len(self.src_table.columns) != len(parsed_cols):
-                raise SchemaError(f"sqlite_utils and sqlglot disagree on number of columns in table {self.source_name}")
-            self._columns = {
-                col.name: ParsedColumn(col, parsed_col)
-                for col, parsed_col in zip(self.src_table.columns, parsed_cols)
-            }
         return self._columns.values()
 
     def get_transpiled_colname(self, source_colname: str) -> str:
@@ -180,12 +179,11 @@ class PGSqlite(object):
         self.transformers['BOOLEAN'] = self.boolean_transformer
         self.show_sample_data = show_sample_data
         self.max_import_concurrency = max_import_concurrency
+        db = Database(self.sqlite_filename)
+        self._tables = {t.name: ParsedTable(t) for t in db.tables}
 
     @property
     def tables(self):
-        if self._tables is None:
-            db = Database(self.sqlite_filename)
-            self._tables = {t.name: ParsedTable(t) for t in db.tables}
         return self._tables.values()
 
     def get_transpiled_tablename(self, source_tablename: str) -> str:
@@ -445,7 +443,11 @@ class PGSqlite(object):
         async def load_all_data():
             await self.gather_with_concurrency(
                 self.max_import_concurrency,
-                *[self.write_table_data(table) for table in self.tables],
+                *[
+                    self.write_table_data(table)
+                    for table in self.tables
+                    if table.source_name not in SQLITE_SYSTEM_TABLES
+                ],
             )
         load_results = asyncio.run(load_all_data())
 
