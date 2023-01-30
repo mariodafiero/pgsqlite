@@ -18,7 +18,7 @@ VERSION = "1.0.2"
 # prerequisite: setuptools
 # http://pypi.python.org/pypi/setuptools
 
-REQUIRES = ["sqlite-utils >= 3.28", "psycopg >= 3.1", "psycopg-binary >= 3.1", "structlog >= 22.1.0", "sqlglot >= 6.1.0"]
+REQUIRES = ["sqlite-utils >= 3.28", "psycopg >= 3.1", "psycopg-binary >= 3.1", "structlog >= 22.1.0", "sqlglot >= 10.5.7"]
 
 
 with open("README.md", "r", encoding="utf-8") as fh:
