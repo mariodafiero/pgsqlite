@@ -211,6 +211,10 @@ class PGSqlite(object):
             # Fix for issues in sqlglot
             # NOTE: embedded foreign key references are already stripped from parsed_column 
             col_sql_str = col.parsed_column.sql(dialect="postgres")
+            #mario.dafiero - issue 16 - start 
+            if "SMALLINT(1)" in col_sql_str:
+                col_sql_str = col_sql_str.replace("SMALLINT(1)", "SMALLINT")
+            #mario.dafiero - issue 16 - end
             if "SERIAL" in col_sql_str:
                 col_sql_str = col_sql_str.replace("INT", "")
             if "PRIMARY KEY SERIAL" in col_sql_str:
